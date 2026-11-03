@@ -89,7 +89,7 @@ queue_cancelled, server_error, network, error.`,
 	})
 	root.SetOut(a.stdout)
 	root.SetErr(a.stderr)
-	root.AddCommand(a.authCmd(), a.runsCmd(), a.jobsCmd())
+	root.AddCommand(a.authCmd(), a.runsCmd(), a.jobsCmd(), a.apiCmd())
 	return root
 }
 

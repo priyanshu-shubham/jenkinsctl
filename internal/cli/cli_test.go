@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -25,7 +26,8 @@ type fakeJenkins struct {
 	runPolls int
 	polls    int
 	queued   int
-	lastForm map[string][]string
+	lastForm url.Values
+	stopped  bool
 	log      string
 }
 
@@ -115,6 +117,15 @@ func (f *fakeJenkins) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if start < len(text) {
 			fmt.Fprint(w, text[start:])
 		}
+	case path == "/job/team/job/api/3/stop" && r.Method == http.MethodPost:
+		f.stopped = true
+		http.Redirect(w, r, "/job/team/job/api/3/", http.StatusFound)
+	case path == "/job/team/job/api/3/":
+		fmt.Fprint(w, "<html>run page</html>")
+	case path == "/queue/cancelItem" && r.Method == http.MethodPost:
+		_ = r.ParseForm()
+		f.lastForm = r.PostForm
+		w.WriteHeader(http.StatusNoContent)
 	case path == "/job/team/job/api/3/consoleText":
 		fmt.Fprint(w, f.log)
 	default:
@@ -525,5 +536,42 @@ func TestNotFoundSaysWhatIsMissing(t *testing.T) {
 	r = decode(t, out)
 	if strings.Join(r.Error.Valid, ",") != "team" || !strings.Contains(r.Error.Message, "the top level") {
 		t.Fatalf("missing folder: %s", out)
+	}
+}
+
+func TestAPI(t *testing.T) {
+	f, srv := newFake(t, "SUCCESS")
+	useServer(t, srv.URL, "secret")
+
+	// GET passes the body through unchanged.
+	code, out, _ := runCLI(t, "api", "-s", "prod", "/job/team/job/api/api/json?tree=builds[number]")
+	if code != ExitOK || !strings.Contains(out, `"builds"`) {
+		t.Fatalf("GET: exit=%d out=%s", code, out)
+	}
+
+	// POST gets a crumb (the fake rejects it otherwise) and reports the
+	// redirect instead of following it to an HTML page.
+	code, out, _ = runCLI(t, "api", "-s", "prod", "-X", "post", "/job/team/job/api/3/stop")
+	if code != ExitOK || !f.stopped || out != `{"http_status":302,"location":"/job/team/job/api/3/"}`+"\n" {
+		t.Fatalf("POST stop: exit=%d out=%q", code, out)
+	}
+
+	// --data implies POST and is form-encoded.
+	code, out, _ = runCLI(t, "api", "-s", "prod", "/queue/cancelItem", "-d", "id=981")
+	if code != ExitOK || f.lastForm.Get("id") != "981" || !strings.Contains(out, `"http_status":204`) {
+		t.Fatalf("POST data: exit=%d out=%q form=%v", code, out, f.lastForm)
+	}
+
+	_, out, _ = runCLI(t, "api", "-s", "prod", "/nope")
+	if r := decode(t, out); r.Error.Kind != kindNotFound || r.Error.HTTPStatus != 404 {
+		t.Fatalf("404: %s", out)
+	}
+	_, out, _ = runCLI(t, "api", "/queue/api/json")
+	if r := decode(t, out); r.Error.Kind != kindUsage {
+		t.Fatalf("missing -s: %s", out)
+	}
+	_, out, _ = runCLI(t, "api", "-s", "prod", "https://evil.example.com/x")
+	if r := decode(t, out); r.Error.Kind != kindUsage {
+		t.Fatalf("foreign host must be rejected: %s", out)
 	}
 }

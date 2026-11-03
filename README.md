@@ -24,7 +24,8 @@ Go installed, `go install github.com/priyanshu-shubham/jenkinsctl/cmd/jenkinsctl
 works too, but it skips the skill.
 
 The skill pre-approves only the read-only commands (`auth list`, `jobs show`,
-`runs list`, `runs watch`, `runs logs`), so Claude Code still asks before it runs `runs submit`.
+`runs list`, `runs watch`, `runs logs`), so Claude Code still asks before it
+runs `runs submit` or `api`.
 
 ## Servers
 
@@ -49,6 +50,7 @@ takes `-s NAME`.
 | `jenkinsctl runs watch -s S JOB --queue ID` | Same, starting from a queue item |
 | `jenkinsctl runs logs -s S JOB BUILD [--tail N] [--follow]` | Console log as plain text |
 | `jenkinsctl jobs show -s S JOB` | Job details and the parameters `submit` accepts |
+| `jenkinsctl api -s S PATH [-X METHOD] [-d DATA]` | Raw authenticated request for anything else, e.g. `-X POST /job/team/job/api/142/stop` |
 
 `runs watch` and `runs submit --watch` stop waiting after `--timeout`
 (default `100s`, which keeps each call under Claude Code's 2-minute Bash limit)
@@ -75,6 +77,8 @@ is always a number.
 ## Output contract
 
 stdout is one JSON document per command, compact unless stdout is a terminal.
+The exceptions are `runs logs` (plain text) and `api` (the response body as
+Jenkins sent it).
 Force a format with `-o json|text`. The exit code is 0 on success and 1 otherwise.
 
 On failure, an `error` object is added to whatever partial result exists:

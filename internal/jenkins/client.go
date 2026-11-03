@@ -78,7 +78,16 @@ func New(o Options) (*Client, error) {
 		base:  u,
 		user:  o.User,
 		token: o.Token,
-		http:  &http.Client{Transport: tr, Jar: jar, Timeout: timeout},
+		http: &http.Client{Transport: tr, Jar: jar, Timeout: timeout,
+			// Jenkins answers actions like POST .../stop with a redirect to an
+			// HTML page; following it would turn the result into that page.
+			CheckRedirect: func(_ *http.Request, via []*http.Request) error {
+				if via[0].Method != http.MethodGet && via[0].Method != http.MethodHead {
+					return http.ErrUseLastResponse
+				}
+				return nil
+			},
+		},
 	}, nil
 }
 

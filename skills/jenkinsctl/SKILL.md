@@ -7,7 +7,8 @@ allowed-tools: Bash(jenkinsctl auth list:*), Bash(jenkinsctl jobs show:*), Bash(
 # Jenkins via `jenkinsctl`
 
 `jenkinsctl` prints one compact JSON document on stdout per command. The
-exception is `runs logs`, which prints the log as plain text.
+exceptions are `runs logs`, which prints the log as plain text, and `api`,
+which prints Jenkins' response body unchanged.
 
 ## The one rule
 
@@ -52,6 +53,7 @@ jenkinsctl runs submit -s S JOB [-p K=V]... [--watch]
 jenkinsctl runs watch -s S JOB BUILD                # wait for / inspect one run
 jenkinsctl runs watch -s S JOB --queue ID
 jenkinsctl runs logs  -s S JOB BUILD [--tail N]     # console log as plain text
+jenkinsctl api -s S PATH [-X METHOD] [-d DATA]      # raw request; last resort, see below
 ```
 
 JOB is the full name with `/` between folders (`team/api/main`), a Jenkins
@@ -150,3 +152,17 @@ note on stderr says whether the run is still going or how it finished. Always
 pass `--tail` with the smallest N that answers the question, because a full
 log can be tens of thousands of lines. Never use `--follow`: it blocks until
 the run ends, so use `runs watch` to wait instead.
+
+**Anything else (raw requests):** use `jenkinsctl api` only when no command
+above fits, for example to abort a run or cancel a queued one. It can do
+anything the user's Jenkins account can, including deleting jobs, so tell the
+user exactly what a non-GET request will do before you run it.
+
+```sh
+jenkinsctl api -s prod -X POST /job/team/job/api/job/main/142/stop   # abort run 142
+jenkinsctl api -s prod -X POST /queue/cancelItem -d id=981           # cancel queue item 981
+jenkinsctl api -s prod '/computer/api/json?tree=computer[displayName,offline]'
+```
+
+GET responses are printed unchanged. Responses with no body come back as
+`{"http_status":302,"location":"..."}`. Errors use the usual `error` object.
