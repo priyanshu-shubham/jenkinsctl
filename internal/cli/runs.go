@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/priyanshu-shubham/jenkinsctl/internal/jenkins"
 )
@@ -25,8 +26,8 @@ team/repo/feature%2Fx.`
 func (a *app) runsCmd() *cobra.Command {
 	return group(&cobra.Command{
 		Use:   "runs",
-		Short: "List, submit and watch job runs",
-	}, a.runsListCmd(), a.runsSubmitCmd(), a.runsWatchCmd())
+		Short: "List, submit, watch and read the logs of job runs",
+	}, a.runsListCmd(), a.runsSubmitCmd(), a.runsWatchCmd(), a.runsLogsCmd())
 }
 
 func (a *app) runsListCmd() *cobra.Command {
@@ -67,7 +68,7 @@ func (a *app) runsSubmitCmd() *cobra.Command {
 		Short: "Start a new run and print it once it has a build number",
 		Long: `Start a new run of JOB. Returns once Jenkins assigns a build number.
 With --watch, keeps waiting until the run finishes; a result other than
-SUCCESS is reported as error kind "run_failed" with the last console lines.
+SUCCESS is reported as error kind "run_failed" with the last 50 log lines.
 
 Parameter names and choice values are checked against the job definition
 first, because Jenkins silently ignores unknown parameters. Unset parameters
@@ -78,10 +79,10 @@ command that continues waiting.
 
 ` + jobHelp,
 		Example: `  jenkinsctl runs submit -s prod team/api/main -p BRANCH=feature/x
-  jenkinsctl runs submit -s prod team/api/main -p ENV=staging --watch --timeout 10m --log-tail 80`,
+  jenkinsctl runs submit -s prod team/api/main -p ENV=staging --watch --timeout 10m`,
 		Args: exactArgs("JOB"),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := wo.check(cmd); err != nil {
+			if err := wo.check(); err != nil {
 				return err
 			}
 			values, err := parseParams(params)
@@ -132,16 +133,18 @@ func (a *app) runsWatchCmd() *cobra.Command {
 		Short: "Wait for a run to finish and print its result",
 		Long: `Wait for run BUILD of JOB (or the run started from queue item ID) to finish
 and print it. A result other than SUCCESS is reported as error kind
-"run_failed" with the last console lines. A run that already finished returns
-immediately, so this is also how to inspect a past run or fetch its log.
+"run_failed" with the last 50 log lines. A run that already finished returns
+immediately, so this is also how to check a past run. For more of the log, use
+'jenkinsctl runs logs'.
 
 If --timeout expires first, the error has kind "timeout" and a "resume"
-command that continues waiting.
+command that continues waiting. For long runs, use --timeout 0 to wait as
+long as it takes.
 
 ` + jobHelp,
-		Example: `  jenkinsctl runs watch -s prod team/api/main 142 --timeout 10m --log-tail 80
-  jenkinsctl runs watch -s prod team/api/main --queue 9812
-  jenkinsctl runs watch -s prod team/api/main 142 --logs`,
+		Example: `  jenkinsctl runs watch -s prod team/api/main 142
+  jenkinsctl runs watch -s prod team/api/main 142 --timeout 0
+  jenkinsctl runs watch -s prod team/api/main --queue 9812`,
 		Args: func(_ *cobra.Command, args []string) error {
 			if queueID > 0 {
 				return exactArgs("JOB")(nil, args)
@@ -150,7 +153,7 @@ command that continues waiting.
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			wo.watch = true
-			if err := wo.check(cmd); err != nil {
+			if err := wo.check(); err != nil {
 				return err
 			}
 			c, err := a.client()
@@ -165,9 +168,9 @@ command that continues waiting.
 			if queueID > 0 {
 				return a.fromQueue(cmd.Context(), c, queueID, wo)
 			}
-			n, err := strconv.Atoi(args[1])
-			if err != nil || n < 1 {
-				return usageErr("BUILD must be a positive build number, got %q", args[1])
+			n, err := parseBuild(args[1])
+			if err != nil {
+				return err
 			}
 			ctx, cancel := withOptionalTimeout(cmd.Context(), wo.timeout)
 			defer cancel()
@@ -184,16 +187,13 @@ command that continues waiting.
 // timed-out wait reports a resume command instead of being killed silently.
 const defaultTimeout = 100 * time.Second
 
-// failureTail is how many console lines a failed run includes by default.
+// failureTail is how many log lines a run that did not succeed includes.
 const failureTail = 50
 
 type watchOpts struct {
-	watch      bool
-	timeout    time.Duration
-	logs       bool
-	logTail    int
-	logTailSet bool
-	interval   time.Duration
+	watch    bool
+	timeout  time.Duration
+	interval time.Duration
 
 	server, job string
 }
@@ -201,34 +201,27 @@ type watchOpts struct {
 func (o *watchOpts) register(cmd *cobra.Command) {
 	f := cmd.Flags()
 	f.DurationVar(&o.timeout, "timeout", defaultTimeout, "stop waiting after this long and report a resume command (0 = no limit)")
-	f.BoolVar(&o.logs, "logs", false, "stream the full console log while waiting (to stderr in JSON mode)")
-	f.IntVar(&o.logTail, "log-tail", 0, fmt.Sprintf("include the last N console lines in the result (default: %d, only if the run did not succeed)", failureTail))
-	f.DurationVar(&o.interval, "interval", 3*time.Second, "poll interval")
+	registerInterval(f, &o.interval)
+}
+
+func registerInterval(f *pflag.FlagSet, d *time.Duration) {
+	f.DurationVar(d, "interval", 3*time.Second, "poll interval")
 	_ = f.MarkHidden("interval")
 }
 
-func (o *watchOpts) check(cmd *cobra.Command) error {
-	o.logTailSet = cmd.Flags().Changed("log-tail")
-	switch {
-	case !o.watch && (o.logs || o.logTailSet):
-		return usageErr("--logs and --log-tail require --watch")
-	case o.logs && o.logTailSet:
-		return usageErr("use either --logs (stream everything) or --log-tail N (last N lines in the result), not both")
-	case o.logTail < 0 || o.timeout < 0:
-		return usageErr("--log-tail and --timeout must not be negative")
+func (o *watchOpts) check() error {
+	if o.timeout < 0 {
+		return usageErr("--timeout must not be negative")
 	}
 	return nil
 }
 
-// tailFor decides how many console lines to attach to a finished or paused run.
-func (o *watchOpts) tailFor(b *jenkins.Build) int {
-	switch {
-	case o.logTailSet:
-		return o.logTail
-	case o.logs || !b.Done() || b.Result == "SUCCESS":
-		return 0
+func parseBuild(s string) (int, error) {
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 1 {
+		return 0, usageErr("BUILD must be a positive build number, got %q", s)
 	}
-	return failureTail
+	return n, nil
 }
 
 // resume rebuilds the watch command that continues an interrupted wait.
@@ -240,12 +233,6 @@ func (o *watchOpts) resume(number, queueID int) string {
 		parts = append(parts, strconv.Itoa(number))
 	}
 	parts = append(parts, "--timeout", o.timeout.String())
-	if o.logs {
-		parts = append(parts, "--logs")
-	}
-	if o.logTailSet {
-		parts = append(parts, "--log-tail", strconv.Itoa(o.logTail))
-	}
 	return strings.Join(parts, " ")
 }
 
@@ -313,17 +300,11 @@ func (a *app) fromQueue(parent context.Context, c *jenkins.Client, qid int, o wa
 // parent so the final output still works after a timeout.
 func (a *app) watchBuild(ctx, parent context.Context, c *jenkins.Client, number int, o watchOpts) error {
 	job := o.job
-	logW := a.stdout
-	if a.jsonOut {
-		logW = a.stderr
-	}
 	var (
 		b       *jenkins.Build
-		off     int64
 		lastSt  string
 		pollErr error
 	)
-poll:
 	for {
 		nb, err := c.GetBuild(ctx, job, number)
 		if err != nil {
@@ -331,20 +312,6 @@ poll:
 			break
 		}
 		b = nb
-		if o.logs {
-			// Once the run is done, drain so no trailing output is lost.
-			for {
-				next, more, err := c.ProgressiveLog(ctx, job, number, off, logW)
-				if err != nil {
-					pollErr = err
-					break poll
-				}
-				off = next
-				if !b.Done() || !more {
-					break
-				}
-			}
-		}
 		if b.Status != lastSt {
 			a.progressf("%s #%d: %s", job, number, b.Status)
 			lastSt = b.Status
@@ -368,8 +335,8 @@ poll:
 			return err
 		}
 	}
-	if n := o.tailFor(b); n > 0 {
-		lines, err := c.LogTail(parent, job, number, n)
+	if b.Done() && b.Result != "SUCCESS" {
+		lines, err := c.LogTail(parent, job, number, failureTail)
 		if err != nil {
 			return err
 		}

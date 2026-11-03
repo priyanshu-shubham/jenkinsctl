@@ -15,8 +15,9 @@ import (
 // Exit codes stay coarse on purpose: error.kind in the JSON output carries the
 // detail, the exit code only keeps `&&` chaining and harness failure flags working.
 const (
-	ExitOK    = 0
-	ExitError = 1
+	ExitOK          = 0
+	ExitError       = 1
+	ExitInterrupted = 130 // shell convention for SIGINT
 )
 
 // Error kinds are the machine-readable contract agents branch on.

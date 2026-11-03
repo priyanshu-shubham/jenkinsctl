@@ -1,12 +1,13 @@
 ---
 name: jenkinsctl
 description: Inspect, trigger and watch Jenkins jobs with the `jenkinsctl` CLI. Use when the user mentions Jenkins, a CI job or pipeline, a build number, or asks to run, re-run, check, or debug a build.
-allowed-tools: Bash(jenkinsctl auth list:*), Bash(jenkinsctl jobs show:*), Bash(jenkinsctl runs list:*), Bash(jenkinsctl runs watch:*)
+allowed-tools: Bash(jenkinsctl auth list:*), Bash(jenkinsctl jobs show:*), Bash(jenkinsctl runs list:*), Bash(jenkinsctl runs watch:*), Bash(jenkinsctl runs logs:*)
 ---
 
 # Jenkins via `jenkinsctl`
 
-`jenkinsctl` prints one compact JSON document on stdout per command.
+`jenkinsctl` prints one compact JSON document on stdout per command. The
+exception is `runs logs`, which prints the log as plain text.
 
 ## The one rule
 
@@ -50,6 +51,7 @@ jenkinsctl runs list  -s S JOB [-n 20]              # recent runs, newest first
 jenkinsctl runs submit -s S JOB [-p K=V]... [--watch]
 jenkinsctl runs watch -s S JOB BUILD                # wait for / inspect one run
 jenkinsctl runs watch -s S JOB --queue ID
+jenkinsctl runs logs  -s S JOB BUILD [--tail N]     # console log as plain text
 ```
 
 JOB is the full name with `/` between folders (`team/api/main`), a Jenkins
@@ -68,7 +70,6 @@ Optional fields are left out when they have no value.
   "number": 142,
   "url": "https://ci.example.com/job/team/job/api/job/main/142/",
   "status": "FAILURE",
-  "result": "FAILURE",
   "building": false,
   "started_at": "2026-11-03T10:15:00Z",
   "duration_ms": 84000,
@@ -81,15 +82,15 @@ Optional fields are left out when they have no value.
 }
 ```
 
-- `status` is `RUNNING` while building. Otherwise it equals `result`: one of
-  `SUCCESS`, `FAILURE`, `UNSTABLE`, `ABORTED` or `NOT_BUILT`. `PENDING` shows
-  up briefly between the two states.
-- `result` is absent while the run is still going. `duration_ms` is the time
-  elapsed so far.
+- `status` is `RUNNING` while the run is going (`PENDING` for a moment at the
+  start). After that it is the result: `SUCCESS`, `FAILURE`, `UNSTABLE`,
+  `ABORTED` or `NOT_BUILT`.
+- `duration_ms` is the time elapsed so far while the run is going.
 - With `error.kind` set to `run_failed` or `timeout`, the Run object also has an `error` field.
-- Optional fields: `result`, `estimated_duration_ms`, `description`, `queue_id`,
-  `parameters`, `causes`, `log_tail`. `log_tail` comes only from waiting
-  commands: 50 lines on failure by default, or N lines with `--log-tail N`.
+- `log_tail` holds the last 50 log lines. It appears only when `runs watch` or
+  `runs submit --watch` ends with a result other than `SUCCESS`.
+- Optional fields: `estimated_duration_ms`, `description`, `queue_id`,
+  `parameters`, `causes`, `log_tail`.
 
 **Queued**: appears only with `error.kind: "timeout"` when the run never left the queue.
 
@@ -134,14 +135,18 @@ jenkinsctl runs submit -s prod team/api/main -p BRANCH=feature/x --watch
 ```
 
 Waits stop at 100s by default and return `resume`, which keeps every call
-under the Bash tool limit. Do not raise `--timeout` above about 110s.
+under the Bash tool limit. Do not raise `--timeout` above about 110s. For
+long-running jobs, keep running `resume` until the run finishes.
 
 **Debug a failure:**
 ```sh
 jenkinsctl runs list  -s prod team/api/main -n 10
-jenkinsctl runs watch -s prod team/api/main 142                   # finished runs return immediately
-jenkinsctl runs watch -s prod team/api/main 142 --log-tail 400    # need more context
+jenkinsctl runs watch -s prod team/api/main 142             # result plus the last 50 log lines; finished runs return immediately
+jenkinsctl runs logs  -s prod team/api/main 142 --tail 400  # more of the log when 50 lines aren't enough
 ```
 
-Avoid `--logs`, which streams the entire console into your context. Prefer
-`--log-tail N` with the smallest N that answers the question.
+`runs logs` exits at once with the log so far, even while the run is going. A
+note on stderr says whether the run is still going or how it finished. Always
+pass `--tail` with the smallest N that answers the question, because a full
+log can be tens of thousands of lines. Never use `--follow`: it blocks until
+the run ends, so use `runs watch` to wait instead.

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -45,6 +46,10 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	err := root.ExecuteContext(ctx)
 	if err == nil {
 		return ExitOK
+	}
+	if errors.Is(err, context.Canceled) && ctx.Err() != nil {
+		// Interrupted (Ctrl-C): the user asked to stop, so no error report.
+		return ExitInterrupted
 	}
 	// Flag parse errors happen before PersistentPreRunE resolves the format.
 	_ = a.resolveOutput()

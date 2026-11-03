@@ -102,13 +102,18 @@ func (f *fakeJenkins) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		js(b)
 	case path == "/job/team/job/api/3/logText/progressiveText":
-		start, _ := strconv.Atoi(r.URL.Query().Get("start"))
-		w.Header().Set("X-Text-Size", strconv.Itoa(len(f.log)))
+		// The run advances on log reads too, and its log grows: only the first
+		// line exists until it finishes.
+		f.polls++
+		text := f.log
 		if building {
+			text = f.log[:strings.Index(f.log, "\n")+1]
 			w.Header().Set("X-More-Data", "true")
 		}
-		if start < len(f.log) {
-			fmt.Fprint(w, f.log[start:])
+		start, _ := strconv.Atoi(r.URL.Query().Get("start"))
+		w.Header().Set("X-Text-Size", strconv.Itoa(len(text)))
+		if start < len(text) {
+			fmt.Fprint(w, text[start:])
 		}
 	case path == "/job/team/job/api/3/consoleText":
 		fmt.Fprint(w, f.log)
@@ -187,12 +192,8 @@ func TestSuccessHasNoErrorAndNoDefaultTail(t *testing.T) {
 	useServer(t, srv.URL, "secret")
 	code, out, _ := runCLI(t, "runs", "watch", "-s", "prod", "team/api", "3", "--interval", "1ms")
 	r := decode(t, out)
-	if code != ExitOK || r.Error != nil || r.Status != "SUCCESS" || r.LogTail != nil {
+	if code != ExitOK || r.Error != nil || r.Status != "SUCCESS" || r.LogTail != nil || strings.Contains(out, `"result"`) {
 		t.Fatalf("exit=%d out=%s", code, out)
-	}
-	code, out, _ = runCLI(t, "runs", "watch", "-s", "prod", "team/api", "3", "--interval", "1ms", "--log-tail", "1")
-	if r := decode(t, out); code != ExitOK || len(r.LogTail) != 1 {
-		t.Fatalf("explicit --log-tail should apply on success: %s", out)
 	}
 }
 
@@ -241,12 +242,12 @@ func TestWatchTimeoutResumes(t *testing.T) {
 	f, srv := newFake(t, "SUCCESS")
 	useServer(t, srv.URL, "secret")
 	f.runPolls = 1 << 30
-	code, out, _ := runCLI(t, "runs", "watch", "-s", "prod", "team/api", "3", "--interval", "20ms", "--timeout", "50ms", "--log-tail", "2")
+	code, out, _ := runCLI(t, "runs", "watch", "-s", "prod", "team/api", "3", "--interval", "20ms", "--timeout", "50ms")
 	r := decode(t, out)
-	if code != ExitError || r.Error == nil || r.Error.Kind != kindTimeout || r.Status != "RUNNING" || len(r.LogTail) != 2 {
+	if code != ExitError || r.Error == nil || r.Error.Kind != kindTimeout || r.Status != "RUNNING" || r.LogTail != nil {
 		t.Fatalf("exit=%d out=%s", code, out)
 	}
-	if want := "jenkinsctl runs watch -s prod team/api 3 --timeout 50ms --log-tail 2"; r.Error.Resume != want {
+	if want := "jenkinsctl runs watch -s prod team/api 3 --timeout 50ms"; r.Error.Resume != want {
 		t.Fatalf("resume = %q, want %q", r.Error.Resume, want)
 	}
 	f.runPolls = 0
@@ -278,8 +279,8 @@ func TestSubmitRejectsBadInputBeforeTriggering(t *testing.T) {
 		{[]string{"-p", "BRNCH=x"}, kindInvalidParam},
 		{[]string{"-p", "ENV=qa"}, kindInvalidParam},
 		{[]string{"-p", "novalue"}, kindUsage},
-		{[]string{"--log-tail", "5"}, kindUsage}, // requires --watch
-		{[]string{"--watch", "--logs", "--log-tail", "5"}, kindUsage},
+		{[]string{"--watch", "--timeout", "-1s"}, kindUsage},
+		{[]string{"--logs"}, kindUsage}, // removed flag
 	} {
 		code, out, _ := runCLI(t, append([]string{"runs", "submit", "-s", "prod", "team/api"}, c.args...)...)
 		if r := decode(t, out); code != ExitError || r.Error == nil || r.Error.Kind != c.kind {
@@ -299,16 +300,64 @@ func TestSubmitRejectsBadInputBeforeTriggering(t *testing.T) {
 	}
 }
 
-func TestWatchLogsGoToStderrInJSONMode(t *testing.T) {
-	_, srv := newFake(t, "UNSTABLE")
-	useServer(t, srv.URL, "secret")
-	code, out, stderr := runCLI(t, "runs", "watch", "-s", "prod", "team/api", "3", "--interval", "1ms", "--logs")
-	r := decode(t, out)
-	if code != ExitError || r.Error.Kind != kindRunFailed || r.LogTail != nil {
-		t.Fatalf("exit=%d out=%s", code, out)
+func TestLogs(t *testing.T) {
+	const full = "step 1\nstep 2\nfinal line\n"
+	cases := []struct {
+		name     string
+		runPolls int
+		args     []string
+		out      string
+		note     string
+	}{
+		{"finished run", 0, nil, full, "finished with FAILURE"},
+		{"tail", 0, []string{"--tail", "2"}, "step 2\nfinal line\n", "finished with FAILURE"},
+		{"running snapshot exits at once", 1 << 30, nil, "step 1\n", "still running"},
+		{"follow until finished", 3, []string{"--follow"}, full, "finished with FAILURE"},
+		{"tail then follow", 0, []string{"--tail", "1", "--follow"}, "final line\n", "finished with FAILURE"},
 	}
-	if stderr != "step 1\nstep 2\nfinal line\n" {
-		t.Fatalf("log should stream exactly once to stderr: %q", stderr)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f, srv := newFake(t, "FAILURE")
+			useServer(t, srv.URL, "secret")
+			f.runPolls = c.runPolls
+			code, out, stderr := runCLI(t, append([]string{"runs", "logs", "-s", "prod", "team/api", "3", "--interval", "1ms"}, c.args...)...)
+			if code != ExitOK || out != c.out || !strings.Contains(stderr, c.note) {
+				t.Fatalf("exit=%d out=%q stderr=%q", code, out, stderr)
+			}
+		})
+	}
+}
+
+func TestLogsMissingRunIsExplained(t *testing.T) {
+	_, srv := newFake(t, "SUCCESS")
+	useServer(t, srv.URL, "secret")
+	_, out, _ := runCLI(t, "runs", "logs", "-s", "prod", "team/api", "99")
+	if r := decode(t, out); r.Error.Kind != kindNotFound || !strings.Contains(r.Error.Message, "latest is #3") {
+		t.Fatalf("out=%s", out)
+	}
+}
+
+func TestInterruptExitsQuietly(t *testing.T) {
+	_, srv := newFake(t, "SUCCESS")
+	useServer(t, srv.URL, "secret")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var out, errb bytes.Buffer
+	code := run(ctx, []string{"runs", "logs", "-s", "prod", "team/api", "3", "--follow"}, nil, &out, &errb)
+	if code != ExitInterrupted || out.Len() != 0 || errb.Len() != 0 {
+		t.Fatalf("exit=%d out=%q err=%q", code, out.String(), errb.String())
+	}
+}
+
+func TestTailWriterAcrossChunks(t *testing.T) {
+	tw := &tailWriter{n: 2}
+	for _, chunk := range []string{"a\nb", "\nc\n", "d"} {
+		_, _ = tw.Write([]byte(chunk))
+	}
+	var buf bytes.Buffer
+	_ = tw.flush(&buf)
+	if buf.String() != "b\nc\nd" {
+		t.Fatalf("got %q", buf.String())
 	}
 }
 

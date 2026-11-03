@@ -24,7 +24,7 @@ Go installed, `go install github.com/priyanshu-shubham/jenkinsctl/cmd/jenkinsctl
 works too, but it skips the skill.
 
 The skill pre-approves only the read-only commands (`auth list`, `jobs show`,
-`runs list`, `runs watch`), so Claude Code still asks before it runs `runs submit`.
+`runs list`, `runs watch`, `runs logs`), so Claude Code still asks before it runs `runs submit`.
 
 ## Servers
 
@@ -47,13 +47,25 @@ takes `-s NAME`.
 | `jenkinsctl runs submit … --watch` | …and wait for it to finish |
 | `jenkinsctl runs watch -s S JOB BUILD` | Wait for run BUILD to finish (returns at once if already finished) |
 | `jenkinsctl runs watch -s S JOB --queue ID` | Same, starting from a queue item |
+| `jenkinsctl runs logs -s S JOB BUILD [--tail N] [--follow]` | Console log as plain text |
 | `jenkinsctl jobs show -s S JOB` | Job details and the parameters `submit` accepts |
 
-Waiting commands also take:
+`runs watch` and `runs submit --watch` stop waiting after `--timeout`
+(default `100s`, which keeps each call under Claude Code's 2-minute Bash limit)
+and return a `resume` command. Use `--timeout 0` to wait as long as it takes.
+A run that doesn't succeed includes its last 50 log lines.
 
-- `--timeout D` defaults to `100s`, which keeps each call under Claude Code's 2-minute Bash limit. Use `0` to wait with no limit.
-- `--log-tail N` puts the last N console lines in the result. Failed runs get 50 lines by default.
-- `--logs` streams the whole console. It goes to stdout in text mode and to stderr in JSON mode.
+For logs, use `jenkinsctl runs logs -s S JOB BUILD`. It always prints plain text:
+
+```sh
+jenkinsctl runs logs -s prod team/api/main 142 --tail 200   # last 200 lines
+jenkinsctl runs logs -s prod team/api/main 142 > run.log    # whole log to a file
+jenkinsctl runs logs -s prod team/api/main 142 -n 50 -f     # last 50 lines, then keep following until the run ends
+```
+
+Without `--follow` it prints the log so far and exits, even if the run is
+still going. `--follow` has no time limit, and Ctrl-C stops it cleanly
+(exit code 130, no error report).
 
 `JOB` is the full name (`team/api/main`), a Jenkins URL inside the job, or a
 URL path (`team/job/api/job/main`). A

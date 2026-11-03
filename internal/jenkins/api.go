@@ -192,7 +192,7 @@ type Build struct {
 	Number              int            `json:"number"`
 	URL                 string         `json:"url"`
 	Status              string         `json:"status"`
-	Result              string         `json:"result,omitempty"`
+	Result              string         `json:"-"` // folded into Status; kept for Done()
 	Building            bool           `json:"building"`
 	StartedAt           time.Time      `json:"started_at"`
 	DurationMs          int64          `json:"duration_ms"`
