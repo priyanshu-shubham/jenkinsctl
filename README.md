@@ -55,7 +55,8 @@ Waiting commands also take:
 - `--log-tail N` puts the last N console lines in the result. Failed runs get 50 lines by default.
 - `--logs` streams the whole console. It goes to stdout in text mode and to stderr in JSON mode.
 
-`JOB` is the full name (`team/api/main`) or a Jenkins URL inside the job. A
+`JOB` is the full name (`team/api/main`), a Jenkins URL inside the job, or a
+URL path (`team/job/api/job/main`). A
 multibranch branch containing `/` is written `team/repo/feature%2Fx`. `BUILD`
 is always a number.
 

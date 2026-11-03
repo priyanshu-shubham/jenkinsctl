@@ -148,10 +148,13 @@ func (c *Client) Do(ctx context.Context, method, p string, contentType string, b
 	if resp.StatusCode >= 400 {
 		defer resp.Body.Close()
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		// The query (usually a long tree= filter) only adds noise to the message.
+		shown := *req.URL
+		shown.RawQuery = ""
 		return nil, &APIError{
 			Status:  resp.StatusCode,
 			Method:  method,
-			URL:     req.URL.String(),
+			URL:     shown.String(),
 			Message: summarizeBody(resp.Header.Get("Content-Type"), b),
 		}
 	}

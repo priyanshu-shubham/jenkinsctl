@@ -30,7 +30,7 @@ func (a *app) jobsShowCmd() *cobra.Command {
 			}
 			j, err := c.GetJob(cmd.Context(), args[0])
 			if err != nil {
-				return err
+				return a.explainNotFound(cmd.Context(), c, args[0], 0, err)
 			}
 			return a.emit(j, func(w io.Writer) {
 				fmt.Fprintf(w, "%s\n  url:        %s\n  buildable:  %v\n", j.FullName, j.URL, j.Buildable)

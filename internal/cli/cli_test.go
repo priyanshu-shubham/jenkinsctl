@@ -60,6 +60,10 @@ func (f *fakeJenkins) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		js(map[string]any{"_class": "hudson.model.Hudson", "jobs": []map[string]any{
 			{"_class": "com.cloudbees.hudson.plugins.folder.Folder", "name": "team", "fullName": "team"},
 		}})
+	case path == "/job/team/api/json":
+		js(map[string]any{"_class": "com.cloudbees.hudson.plugins.folder.Folder", "jobs": []map[string]any{
+			{"_class": "org.jenkinsci.plugins.workflow.job.WorkflowJob", "fullName": "team/api"},
+		}})
 	case path == "/job/team/job/api/api/json":
 		tree := r.URL.Query().Get("tree")
 		if strings.HasPrefix(tree, "builds[") {
@@ -71,7 +75,7 @@ func (f *fakeJenkins) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		js(map[string]any{
 			"_class": "org.jenkinsci.plugins.workflow.job.WorkflowJob", "name": "api", "fullName": "team/api",
-			"buildable": true, "color": "red",
+			"buildable": true, "color": "red", "lastBuild": map[string]any{"number": 3},
 			"property": []map[string]any{{"parameterDefinitions": []map[string]any{
 				{"name": "BRANCH", "type": "StringParameterDefinition", "defaultParameterValue": map[string]any{"value": "main"}},
 				{"name": "ENV", "type": "ChoiceParameterDefinition", "choices": []string{"dev", "prod"}},
@@ -434,5 +438,43 @@ func TestAuthLoginNeedsAnswers(t *testing.T) {
 	_, out, _ := runCLIIn(t, "", "auth", "login")
 	if r := decode(t, out); r.Error.Kind != kindUsage || !strings.Contains(r.Error.Message, "a human must run") {
 		t.Fatalf("out=%s", out)
+	}
+}
+
+func TestJobAcceptsURLPathFragments(t *testing.T) {
+	_, srv := newFake(t, "SUCCESS")
+	useServer(t, srv.URL, "secret")
+	for _, job := range []string{"team/job/api", "job/team/job/api", "/job/team/job/api/"} {
+		code, out, _ := runCLI(t, "runs", "watch", "-s", "prod", job, "3", "--interval", "1ms")
+		if r := decode(t, out); code != ExitOK || r.Number != 3 {
+			t.Errorf("%s: exit=%d out=%s", job, code, out)
+		}
+	}
+}
+
+func TestNotFoundSaysWhatIsMissing(t *testing.T) {
+	_, srv := newFake(t, "SUCCESS")
+	useServer(t, srv.URL, "secret")
+
+	_, out, _ := runCLI(t, "runs", "watch", "-s", "prod", "team/api", "99")
+	r := decode(t, out)
+	if r.Error.Kind != kindNotFound || r.Error.Message != "job team/api has no run #99; the latest is #3" {
+		t.Fatalf("missing run: %s", out)
+	}
+
+	_, out, _ = runCLI(t, "jobs", "show", "-s", "prod", "team/apx")
+	r = decode(t, out)
+	if r.Error.Kind != kindNotFound || strings.Join(r.Error.Valid, ",") != "team/api" || !strings.Contains(r.Error.Message, "folder team") {
+		t.Fatalf("missing job should list siblings: %s", out)
+	}
+	if strings.Contains(r.Error.Message, "tree=") {
+		t.Fatalf("message should not include the API query: %s", out)
+	}
+
+	// A missing folder falls back to the nearest folder that exists.
+	_, out, _ = runCLI(t, "runs", "list", "-s", "prod", "tem/api")
+	r = decode(t, out)
+	if strings.Join(r.Error.Valid, ",") != "team" || !strings.Contains(r.Error.Message, "the top level") {
+		t.Fatalf("missing folder: %s", out)
 	}
 }

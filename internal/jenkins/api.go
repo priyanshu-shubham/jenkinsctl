@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -52,7 +53,39 @@ func (c *Client) JobName(job string) (string, error) {
 		}
 		return strings.Join(names, "/"), nil
 	}
-	return strings.Trim(job, "/"), nil
+	// Accept URL-path fragments like "folder/job/sub/job/main": "job" followed
+	// by another segment is Jenkins' separator, not a job name.
+	segs := strings.Split(strings.Trim(job, "/"), "/")
+	names := make([]string, 0, len(segs))
+	for i, seg := range segs {
+		if seg == "" || (seg == "job" && i+1 < len(segs)) {
+			continue
+		}
+		names = append(names, seg)
+	}
+	return strings.Join(names, "/"), nil
+}
+
+// ChildJobs returns the full names of the jobs directly inside folder ("" for the root).
+func (c *Client) ChildJobs(ctx context.Context, folder string) ([]string, error) {
+	p, err := c.JobPath(folder)
+	if err != nil {
+		return nil, err
+	}
+	var r struct {
+		Jobs []struct {
+			FullName string `json:"fullName"`
+		} `json:"jobs"`
+	}
+	if err := c.GetJSON(ctx, p+"/api/json?tree="+url.QueryEscape("jobs[fullName]"), &r); err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(r.Jobs))
+	for _, j := range r.Jobs {
+		names = append(names, j.FullName)
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 // ErrInvalidInput marks caller mistakes (as opposed to server failures).

@@ -128,6 +128,13 @@ func validateURL(v string) error {
 	return nil
 }
 
+type serverEntry struct {
+	Name     string `json:"name"`
+	URL      string `json:"url"`
+	User     string `json:"user"`
+	Insecure bool   `json:"insecure,omitempty"`
+}
+
 func (a *app) authListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
@@ -138,16 +145,10 @@ func (a *app) authListCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			type entry struct {
-				Name     string `json:"name"`
-				URL      string `json:"url"`
-				User     string `json:"user"`
-				Insecure bool   `json:"insecure,omitempty"`
-			}
-			out := []entry{}
+			out := []serverEntry{}
 			for _, n := range cfg.Names() {
 				s := cfg.Servers[n]
-				out = append(out, entry{Name: n, URL: s.URL, User: s.User, Insecure: s.Insecure})
+				out = append(out, serverEntry{Name: n, URL: s.URL, User: s.User, Insecure: s.Insecure})
 			}
 			return a.emit(out, func(w io.Writer) {
 				if len(out) == 0 {

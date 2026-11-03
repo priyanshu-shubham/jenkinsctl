@@ -17,9 +17,10 @@ import (
 	"github.com/priyanshu-shubham/jenkinsctl/internal/jenkins"
 )
 
-const jobHelp = `JOB is the job's full name with folders separated by "/" (e.g. team/api/main)
-or any Jenkins URL inside the job. Multibranch branches containing "/" are
-encoded by Jenkins, so write team/repo/feature%2Fx.`
+const jobHelp = `JOB is the job's full name with folders separated by "/" (e.g. team/api/main),
+any Jenkins URL inside the job, or a URL path like team/job/api/job/main.
+Multibranch branches containing "/" are encoded by Jenkins, so write
+team/repo/feature%2Fx.`
 
 func (a *app) runsCmd() *cobra.Command {
 	return group(&cobra.Command{
@@ -46,7 +47,7 @@ func (a *app) runsListCmd() *cobra.Command {
 			}
 			builds, err := c.ListBuilds(cmd.Context(), args[0], limit)
 			if err != nil {
-				return err
+				return a.explainNotFound(cmd.Context(), c, args[0], 0, err)
 			}
 			return a.emit(builds, func(w io.Writer) { buildsTable(w, builds) })
 		},
@@ -94,7 +95,7 @@ command that continues waiting.
 			}
 			job, err := c.GetJob(ctx, args[0])
 			if err != nil {
-				return err
+				return a.explainNotFound(ctx, c, args[0], 0, err)
 			}
 			if job.IsFolder() {
 				return usageErr("%s is a folder, not a job", job.FullName)
@@ -359,7 +360,7 @@ poll:
 
 	timedOut := pollErr != nil && ctx.Err() != nil && parent.Err() == nil
 	if pollErr != nil && !timedOut {
-		return pollErr
+		return a.explainNotFound(parent, c, job, number, pollErr)
 	}
 	if b == nil {
 		var err error

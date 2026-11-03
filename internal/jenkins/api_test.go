@@ -17,6 +17,10 @@ func TestJobPath(t *testing.T) {
 		"team/a b":         "/job/team/job/a%20b",
 		"https://ci.example.com/jenkins/job/team/job/api/job/main/42/console": "/job/team/job/api/job/main",
 		"https://ci.example.com/jenkins/view/All/job/team/job/api/":           "/job/team/job/api",
+		"team/job/api/job/main":  "/job/team/job/api/job/main",
+		"job/team/job/api":       "/job/team/job/api",
+		"team/job":               "/job/team/job/job", // a trailing "job" is a real name
+		"livedesign/job/master/": "/job/livedesign/job/master",
 	}
 	for in, want := range cases {
 		got, err := c.JobPath(in)
