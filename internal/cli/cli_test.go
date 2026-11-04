@@ -29,6 +29,10 @@ type fakeJenkins struct {
 	lastForm url.Values
 	stopped  bool
 	log      string
+	// chunk caps bytes per progressiveText response (0 = no cap); noSize drops
+	// X-Text-Size. Both mimic servers or proxies seen in the wild.
+	chunk  int
+	noSize bool
 }
 
 func newFake(t *testing.T, result string) (*fakeJenkins, *httptest.Server) {
@@ -107,15 +111,20 @@ func (f *fakeJenkins) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// The run advances on log reads too, and its log grows: only the first
 		// line exists until it finishes.
 		f.polls++
-		text := f.log
-		if building {
-			text = f.log[:strings.Index(f.log, "\n")+1]
+		text := f.available(building)
+		start, _ := strconv.Atoi(r.URL.Query().Get("start"))
+		end := len(text)
+		if f.chunk > 0 && start+f.chunk < end {
+			end = start + f.chunk
+		}
+		if building || end < len(text) {
 			w.Header().Set("X-More-Data", "true")
 		}
-		start, _ := strconv.Atoi(r.URL.Query().Get("start"))
-		w.Header().Set("X-Text-Size", strconv.Itoa(len(text)))
-		if start < len(text) {
-			fmt.Fprint(w, text[start:])
+		if !f.noSize {
+			w.Header().Set("X-Text-Size", strconv.Itoa(end))
+		}
+		if start < end {
+			fmt.Fprint(w, text[start:end])
 		}
 	case path == "/job/team/job/api/3/stop" && r.Method == http.MethodPost:
 		f.stopped = true
@@ -127,10 +136,18 @@ func (f *fakeJenkins) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.lastForm = r.PostForm
 		w.WriteHeader(http.StatusNoContent)
 	case path == "/job/team/job/api/3/consoleText":
-		fmt.Fprint(w, f.log)
+		fmt.Fprint(w, f.available(building))
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// available is the log written so far: only the first line while running.
+func (f *fakeJenkins) available(building bool) string {
+	if building {
+		return f.log[:strings.Index(f.log, "\n")+1]
+	}
+	return f.log
 }
 
 // useServer points JENKINSCTL_CONFIG at a temp config holding server "prod" for srvURL.
@@ -336,6 +353,51 @@ func TestLogs(t *testing.T) {
 				t.Fatalf("exit=%d out=%q stderr=%q", code, out, stderr)
 			}
 		})
+	}
+}
+
+// Regression: a server that sends the progressive log in chunks used to make
+// 'runs logs --tail' return the end of the first chunk forever.
+func TestLogsWithChunkedProgressiveResponses(t *testing.T) {
+	var b strings.Builder
+	for i := 1; i <= 2000; i++ {
+		fmt.Fprintf(&b, "line %d\n", i)
+	}
+	full := b.String()
+	last3 := "line 1998\nline 1999\nline 2000\n"
+
+	cases := []struct {
+		name     string
+		runPolls int
+		args     []string
+		out      string
+	}{
+		{"tail of finished run", 0, []string{"--tail", "3"}, last3},
+		{"whole finished run", 0, nil, full},
+		{"follow finished run", 0, []string{"--follow"}, full},
+		{"follow running run", 3, []string{"--follow"}, full},
+		{"tail then follow", 0, []string{"--tail", "3", "--follow"}, last3},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f, srv := newFake(t, "SUCCESS")
+			useServer(t, srv.URL, "secret")
+			f.log, f.chunk, f.runPolls = full, 100, c.runPolls
+			code, out, stderr := runCLI(t, append([]string{"runs", "logs", "-s", "prod", "team/api", "3", "--interval", "1ms"}, c.args...)...)
+			if code != ExitOK || out != c.out {
+				t.Fatalf("exit=%d stderr=%q\nout has %d bytes, want %d; ends %q", code, stderr, len(out), len(c.out), out[max(0, len(out)-40):])
+			}
+		})
+	}
+}
+
+func TestLogsFollowFailsWithoutTextSize(t *testing.T) {
+	f, srv := newFake(t, "SUCCESS")
+	useServer(t, srv.URL, "secret")
+	f.noSize = true
+	code, out, _ := runCLI(t, "runs", "logs", "-s", "prod", "team/api", "3", "--follow", "--interval", "1ms")
+	if code != ExitError || !strings.Contains(out, "X-Text-Size") || strings.Count(out, "step 1") > 1 {
+		t.Fatalf("exit=%d out=%q", code, out)
 	}
 }
 

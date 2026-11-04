@@ -397,8 +397,10 @@ func (c *Client) WaitForQueue(ctx context.Context, id int, interval time.Duratio
 	}
 }
 
-// ProgressiveLog fetches console output from byte offset start. more is true
-// while the build is still producing output.
+// ProgressiveLog fetches console output from byte offset start. A response may
+// hold only part of what is available: callers must keep requesting from next
+// while more is true, and only wait when next == start (caught up with a
+// running build).
 func (c *Client) ProgressiveLog(ctx context.Context, job string, number int, start int64, w io.Writer) (next int64, more bool, err error) {
 	p, err := c.JobPath(job)
 	if err != nil {
@@ -412,11 +414,29 @@ func (c *Client) ProgressiveLog(ctx context.Context, job string, number int, sta
 	if _, err := io.Copy(w, resp.Body); err != nil {
 		return start, false, err
 	}
-	next = start
-	if v, err := strconv.ParseInt(resp.Header.Get("X-Text-Size"), 10, 64); err == nil {
-		next = v
+	// Without the offset there is no way to continue; guessing would repeat
+	// or skip output.
+	next, err = strconv.ParseInt(resp.Header.Get("X-Text-Size"), 10, 64)
+	if err != nil {
+		return start, false, fmt.Errorf("Jenkins sent no X-Text-Size header (a proxy may be stripping it), so the log cannot be followed")
 	}
 	return next, resp.Header.Get("X-More-Data") == "true", nil
+}
+
+// ConsoleText copies the complete console log as it is now, even for a
+// running build, in a single request.
+func (c *Client) ConsoleText(ctx context.Context, job string, number int, w io.Writer) error {
+	p, err := c.JobPath(job)
+	if err != nil {
+		return err
+	}
+	resp, err := c.Do(ctx, http.MethodGet, fmt.Sprintf("%s/%d/consoleText", p, number), "", nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, err = io.Copy(w, resp.Body)
+	return err
 }
 
 // LogTail streams the full console and keeps only the last n lines in memory.

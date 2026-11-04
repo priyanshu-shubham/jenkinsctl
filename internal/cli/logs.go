@@ -55,36 +55,61 @@ code is 0 whenever the log was fetched, whatever the run's result.
 				return err
 			}
 			// Also confirms the run exists, so a 404 can be explained precisely.
-			if _, err := c.GetBuild(ctx, job, n); err != nil {
+			b, err := c.GetBuild(ctx, job, n)
+			if err != nil {
 				return a.explainNotFound(ctx, c, job, n, err)
 			}
 
-			var first io.Writer = a.stdout
+			var out io.Writer = a.stdout
 			tw := &tailWriter{n: tail}
 			if tail > 0 {
-				first = tw
+				out = tw
 			}
-			off, more, err := c.ProgressiveLog(ctx, job, n, 0, first)
-			if err != nil {
-				return err
-			}
-			if tail > 0 {
-				if err := tw.flush(a.stdout); err != nil {
+			if !follow {
+				if err := c.ConsoleText(ctx, job, n, out); err != nil {
 					return err
 				}
-			}
-			for follow && more {
-				if err := jenkins.Sleep(ctx, interval); err != nil {
-					return err
+				if tail > 0 {
+					if err := tw.flush(a.stdout); err != nil {
+						return err
+					}
 				}
-				if off, more, err = c.ProgressiveLog(ctx, job, n, off, a.stdout); err != nil {
-					return err
+				if b.Building {
+					fmt.Fprintf(a.stderr, "[jenkinsctl] %s #%d is still running; this is the log so far (add --follow to keep reading)\n", job, n)
+				} else {
+					fmt.Fprintf(a.stderr, "[jenkinsctl] %s #%d finished with %s\n", job, n, b.Status)
 				}
+				return nil
 			}
 
-			if more {
-				fmt.Fprintf(a.stderr, "[jenkinsctl] %s #%d is still running; this is the log so far (add --follow to keep reading)\n", job, n)
-				return nil
+			// Progressive offsets count raw log bytes, so following can't start
+			// from a consoleText read; it reads from 0 and drains to the end.
+			var off int64
+			caughtUp := false
+			for {
+				next, more, err := c.ProgressiveLog(ctx, job, n, off, out)
+				if err != nil {
+					return err
+				}
+				progressed := next != off
+				off = next
+				if !caughtUp && (!more || !progressed) {
+					caughtUp = true
+					if tail > 0 {
+						if err := tw.flush(a.stdout); err != nil {
+							return err
+						}
+						out = a.stdout
+					}
+				}
+				if !more {
+					break
+				}
+				if !progressed {
+					if err := jenkins.Sleep(ctx, interval); err != nil {
+						return err
+					}
+				}
 			}
 			if b, err := c.GetBuild(ctx, job, n); err == nil && b.Done() {
 				fmt.Fprintf(a.stderr, "[jenkinsctl] %s #%d finished with %s\n", job, n, b.Status)
